@@ -1,0 +1,12 @@
+[profile.default]
+src = "src"
+out = "out"
+ast = true
+ffi = true
+libs = ["lib"]
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+build_info = true
+extra_output = ["storageLayout"]
+[rpc_endpoints]
+sepolia = "https://omniscient-frosty-telescope.base-sepolia.quiknode.pro/1be47e3c8f5eae2acc8bed88d5ed2630d6a1a93f"
