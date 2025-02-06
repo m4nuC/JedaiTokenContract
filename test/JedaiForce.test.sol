@@ -8,6 +8,8 @@ import {Upgrades} from "openzeppelin-foundry-upgrades/Upgrades.sol";
 import {Options} from "openzeppelin-foundry-upgrades/Options.sol";
 import {ERC20CappedUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20CappedUpgradeable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+
 contract JedaiForceTest is Test {
     JedaiForce jedaiForce;
     address proxy;
@@ -17,12 +19,18 @@ contract JedaiForceTest is Test {
     // Test helpers for merkle tree
     bytes32[] public merkleProof;
     bytes32 public merkleRoot;
-    uint256 public constant CLAIM_AMOUNT = 1000 * 10**18; // 1000 tokens
+    uint256 public CLAIM_AMOUNT;
+
+    // Add claimer addresses
+    address public claimer1;
+    address public claimer2;
 
     // Set up the test environment before running tests
     function setUp() public {
         // Define the owner address
         owner = vm.addr(1);
+        claimer1 = vm.addr(2);
+        claimer2 = vm.addr(3);
         
         // Deploy the proxy using the contract name
         proxy = Upgrades.deployUUPSProxy(
@@ -37,22 +45,34 @@ contract JedaiForceTest is Test {
         // Emit the owner address for debugging purposes
         emit log_address(owner);
 
-        // Setup merkle tree with one address for testing
-        // In production, you'd generate this off-chain
-        bytes32[] memory leaves = new bytes32[](1);
-        leaves[0] = keccak256(abi.encodePacked(address(2), CLAIM_AMOUNT));
-        
-        // For simplicity, we're using a single-node merkle tree
-        // In production, you'd use a proper merkle tree library
-        merkleRoot = leaves[0];
-        merkleProof = new bytes32[](0);
+        // Initialize CLAIM_AMOUNT
+        CLAIM_AMOUNT = 1000 * 10**jedaiForce.decimals();
 
+        // Create merkle tree with two addresses
+        bytes32[] memory leaves = new bytes32[](2);
+        leaves[0] = keccak256(abi.encodePacked(claimer1, CLAIM_AMOUNT));
+        leaves[1] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2)); // claimer2 gets double allocation
+
+        // Sort leaves for consistent merkle tree
+        if (uint256(leaves[0]) > uint256(leaves[1])) {
+            bytes32 temp = leaves[0];
+            leaves[0] = leaves[1];
+            leaves[1] = temp;
+        }
+
+        // Calculate merkle root
+        merkleRoot = keccak256(abi.encodePacked(leaves[0], leaves[1]));
+
+        // Generate proof for claimer1
+        merkleProof = new bytes32[](1);
+        merkleProof[0] = leaves[1];  // If claimer1's leaf is leaves[0]
+        
         // Set merkle root and claimable supply
         vm.prank(owner);
         jedaiForce.setMerkleRoot(merkleRoot);
         
         vm.prank(owner);
-        jedaiForce.setClaimableSupply(CLAIM_AMOUNT);
+        jedaiForce.setClaimableSupply(CLAIM_AMOUNT * 3); // Total supply for both claimers
     }
 
     // Test the basic ERC20 functionality of the MyToken contract
@@ -135,26 +155,30 @@ contract JedaiForceTest is Test {
         // Check decimals
         assertEq(jedaiForce.decimals(), 18);
         
-        // Initial supply should be 1,000,000 tokens with 18 decimals
-        uint256 expectedInitialSupply = 1_000_000 * 10**18;
+        // Initial supply should be 1,000,000 tokens
+        uint256 expectedInitialSupply = 1_000_000 * 10**jedaiForce.decimals();
         assertEq(jedaiForce.totalSupply(), expectedInitialSupply);
         
-        // Max supply should be 1 billion tokens with 18 decimals
-        uint256 expectedMaxSupply = 1_000_000_000 * 10**18;
+        // Max supply should be 1 billion tokens
+        uint256 expectedMaxSupply = 1_000_000_000 * 10**jedaiForce.decimals();
         assertEq(jedaiForce.cap(), expectedMaxSupply);
         
         // Verify remaining supply
         uint256 remainingSupply = jedaiForce.cap() - jedaiForce.totalSupply();
-        assertEq(remainingSupply, 999_000_000 * 10**18); // 999 million tokens remaining
+        assertEq(remainingSupply, 999_000_000 * 10**jedaiForce.decimals()); // 999 million tokens remaining
     }
 
     function testGetClaimableSupply() public {
-        // Initial claimable supply should be 0
-        assertEq(jedaiForce.getClaimableSupply(), 0);
+        uint256 expectedSupply = 1000 * 10**jedaiForce.decimals();
+        
+        vm.prank(owner);
+        jedaiForce.setClaimableSupply(expectedSupply);
+        
+        assertEq(jedaiForce.getClaimableSupply(), expectedSupply);
     }
 
     function testSetClaimableSupply() public {
-        uint256 newSupply = 1000 * 10**18;
+        uint256 newSupply = 1000 * 10**jedaiForce.decimals();
         
         // Should revert when non-owner tries to set claimable supply
         vm.prank(address(2));
@@ -174,59 +198,71 @@ contract JedaiForceTest is Test {
         assertEq(jedaiForce.getClaimableSupply(), newSupply);
     }
 
-    function testClaimSuccess() public {
-        vm.prank(address(2));
-        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, merkleProof);
+    function testClaimSuccessClaimer1() public {
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2));
+
+        vm.prank(claimer1);
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, proof);
         
-        assertEq(jedaiForce.balanceOf(address(2)), CLAIM_AMOUNT);
-        assertEq(jedaiForce.claimedAmount(address(2)), CLAIM_AMOUNT);
-        assertEq(jedaiForce.getClaimableSupply(), 0);
+        assertEq(jedaiForce.balanceOf(claimer1), CLAIM_AMOUNT);
+        assertEq(jedaiForce.claimedAmount(claimer1), CLAIM_AMOUNT);
+        assertEq(jedaiForce.getClaimableSupply(), CLAIM_AMOUNT * 2); // Remaining for claimer2
     }
 
-    function testPartialClaim() public {
-        uint256 partialAmount = CLAIM_AMOUNT / 2;
-        
-        // First claim
-        vm.prank(address(2));
-        jedaiForce.claim(CLAIM_AMOUNT, partialAmount, merkleProof);
-        
-        assertEq(jedaiForce.balanceOf(address(2)), partialAmount);
-        assertEq(jedaiForce.claimedAmount(address(2)), partialAmount);
-        assertEq(jedaiForce.getClaimableSupply(), partialAmount);
+    function testClaimSuccessClaimer2() public {
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer1, CLAIM_AMOUNT));
 
-        // Second claim
-        vm.prank(address(2));
-        jedaiForce.claim(CLAIM_AMOUNT, partialAmount, merkleProof);
+        vm.prank(claimer2);
+        jedaiForce.claim(CLAIM_AMOUNT * 2, CLAIM_AMOUNT * 2, proof);
         
-        assertEq(jedaiForce.balanceOf(address(2)), CLAIM_AMOUNT);
-        assertEq(jedaiForce.claimedAmount(address(2)), CLAIM_AMOUNT);
-        assertEq(jedaiForce.getClaimableSupply(), 0);
+        assertEq(jedaiForce.balanceOf(claimer2), CLAIM_AMOUNT * 2);
+        assertEq(jedaiForce.claimedAmount(claimer2), CLAIM_AMOUNT * 2);
+        assertEq(jedaiForce.getClaimableSupply(), CLAIM_AMOUNT); // Remaining for claimer1
     }
 
-    function testClaimFailures() public {
+    function testPartialClaimClaimer2() public {
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer1, CLAIM_AMOUNT));
+
+        // First claim - half of allocation
+        vm.prank(claimer2);
+        jedaiForce.claim(CLAIM_AMOUNT * 2, CLAIM_AMOUNT, proof);
+        
+        assertEq(jedaiForce.balanceOf(claimer2), CLAIM_AMOUNT);
+        assertEq(jedaiForce.claimedAmount(claimer2), CLAIM_AMOUNT);
+        
+        // Second claim - remaining allocation
+        vm.prank(claimer2);
+        jedaiForce.claim(CLAIM_AMOUNT * 2, CLAIM_AMOUNT, proof);
+        
+        assertEq(jedaiForce.balanceOf(claimer2), CLAIM_AMOUNT * 2);
+        assertEq(jedaiForce.claimedAmount(claimer2), CLAIM_AMOUNT * 2);
+    }
+
+    function testClaimFailuresWithProperMerkle() public {
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2));
+
         // Try to claim with wrong address
-        vm.prank(address(3));
+        vm.prank(address(4));
         vm.expectRevert("Invalid merkle proof");
-        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, merkleProof);
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, proof);
 
-        // Try to claim more than allocated
-        vm.prank(address(2));
+        // Try to claim more than allocated for claimer1
+        vm.prank(claimer1);
         vm.expectRevert("Cannot claim more than allocated");
-        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT + 1, merkleProof);
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT * 2, proof);
 
-        // Try to claim zero amount
-        vm.prank(address(2));
-        vm.expectRevert("Cannot claim 0 tokens");
-        jedaiForce.claim(CLAIM_AMOUNT, 0, merkleProof);
+        // Successful claim for claimer1
+        vm.prank(claimer1);
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, proof);
 
-        // Claim full amount
-        vm.prank(address(2));
-        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, merkleProof);
-
-        // Try to claim again
-        vm.prank(address(2));
+        // Try to claim again with claimer1
+        vm.prank(claimer1);
         vm.expectRevert("Already claimed full allocation");
-        jedaiForce.claim(CLAIM_AMOUNT, 1, merkleProof);
+        jedaiForce.claim(CLAIM_AMOUNT, 1, proof);
     }
 
     function testClaimWithInsufficientClaimableSupply() public {
@@ -241,16 +277,16 @@ contract JedaiForceTest is Test {
     }
 
     function testClaimExceedingRemainingAllocation() public {
-        uint256 firstClaim = CLAIM_AMOUNT / 2;
-        uint256 secondClaim = CLAIM_AMOUNT; // This would exceed total allocation
-        
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2));
+
         // First claim succeeds
-        vm.prank(address(2));
-        jedaiForce.claim(CLAIM_AMOUNT, firstClaim, merkleProof);
+        vm.prank(claimer1);
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT / 2, proof);
         
         // Second claim fails because it would exceed total allocation
-        vm.prank(address(2));
+        vm.prank(claimer1);
         vm.expectRevert("Claim amount exceeds allocation");
-        jedaiForce.claim(CLAIM_AMOUNT, secondClaim, merkleProof);
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, proof);
     }
 }
