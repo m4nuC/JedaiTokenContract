@@ -15,3 +15,5 @@ docs/
 
 # Dependencies
 lib/
+
+.DS_Store
