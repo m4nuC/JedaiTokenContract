@@ -9,6 +9,8 @@ import {Options} from "openzeppelin-foundry-upgrades/Options.sol";
 import {ERC20CappedUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20CappedUpgradeable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 contract JedaiForceTest is Test {
     JedaiForce jedaiForce;
@@ -288,5 +290,108 @@ contract JedaiForceTest is Test {
         vm.prank(claimer1);
         vm.expectRevert("Claim amount exceeds allocation");
         jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, proof);
+    }
+
+    function testBurnOwnTokens() public {
+        // Mint tokens to test address
+        vm.prank(owner);
+        jedaiForce.mint(address(2), 1000);
+        
+        // Verify initial balance and supply
+        assertEq(jedaiForce.balanceOf(address(2)), 1000);
+        uint256 initialSupply = jedaiForce.totalSupply();
+        uint256 initialCap = jedaiForce.cap();
+        
+        // Burn tokens from address(2)
+        vm.prank(address(2));
+        jedaiForce.burn(500);
+        
+        // Verify balance, supply, and cap decreased
+        assertEq(jedaiForce.balanceOf(address(2)), 500);
+        assertEq(jedaiForce.totalSupply(), initialSupply - 500);
+        assertEq(jedaiForce.cap(), initialCap - 500);
+        assertEq(jedaiForce.totalBurned(), 500);
+    }
+
+    function testBurnFromWithAllowance() public {
+        // Mint tokens to test address
+        vm.prank(owner);
+        jedaiForce.mint(address(2), 1000);
+        
+        // Approve address(3) to spend tokens
+        vm.prank(address(2));
+        jedaiForce.approve(address(3), 750);
+        
+        // Verify initial state
+        uint256 initialSupply = jedaiForce.totalSupply();
+        uint256 initialCap = jedaiForce.cap();
+        
+        // Burn tokens using burnFrom
+        vm.prank(address(3));
+        jedaiForce.burnFrom(address(2), 600);
+        
+        // Verify balance, supply, cap, and allowance
+        assertEq(jedaiForce.balanceOf(address(2)), 400);
+        assertEq(jedaiForce.totalSupply(), initialSupply - 600);
+        assertEq(jedaiForce.cap(), initialCap - 600);
+        assertEq(jedaiForce.allowance(address(2), address(3)), 150);
+        assertEq(jedaiForce.totalBurned(), 600);
+    }
+
+    function testBurnFromWithoutAllowance() public {
+        // Mint tokens to test address
+        vm.prank(owner);
+        jedaiForce.mint(address(2), 1000);
+        
+        // Try to burn without allowance
+        vm.prank(address(3));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector,
+                address(3), // spender
+                0,         // current allowance
+                500       // amount required
+            )
+        );
+        jedaiForce.burnFrom(address(2), 500);
+    }
+
+    function testBurnMoreThanBalance() public {
+        // Mint tokens to test address
+        vm.prank(owner);
+        jedaiForce.mint(address(2), 1000);
+        
+        // Try to burn more than balance
+        vm.prank(address(2));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientBalance.selector,
+                address(2), // sender
+                1000,      // balance
+                1500      // amount required
+            )
+        );
+        jedaiForce.burn(1500);
+    }
+
+    function testMultipleBurnsUpdateTotalBurned() public {
+        // Mint tokens to multiple addresses
+        vm.prank(owner);
+        jedaiForce.mint(address(2), 1000);
+        vm.prank(owner);
+        jedaiForce.mint(address(3), 1000);
+        
+        uint256 initialCap = jedaiForce.cap();
+        
+        // Perform multiple burns
+        vm.prank(address(2));
+        jedaiForce.burn(300);
+        
+        vm.prank(address(3));
+        jedaiForce.burn(400);
+        
+        // Verify cumulative burned amount and cap reduction
+        assertEq(jedaiForce.totalBurned(), 700);
+        assertEq(jedaiForce.cap(), initialCap - 700);
     }
 }

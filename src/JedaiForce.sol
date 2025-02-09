@@ -8,12 +8,14 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUp
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+
 contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable {
     uint8 public constant DECIMALS = 18;
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** DECIMALS; // 1 billion tokens with 18 decimals
     uint256 private _claimableSupply;
     bytes32 private _merkleRoot;
     mapping(address => uint256) private _claimedAmount;  // Track amount claimed instead of boolean
+    uint256 private _totalBurned;
 
     
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -29,8 +31,6 @@ contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable
         __UUPSUpgradeable_init();
         _mint(msg.sender, 1000000 * 10 ** decimals());
     }
-
-
 
     function decimals() public pure override returns (uint8) {
         return DECIMALS;
@@ -107,5 +107,24 @@ contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable
     /// @return uint256 Amount of tokens claimed so far
     function claimedAmount(address account) external view returns (uint256) {
         return _claimedAmount[account];
+    }
+
+    function cap() public view virtual override returns (uint256) {
+        return MAX_SUPPLY - _totalBurned;
+    }
+
+    function burn(uint256 amount) public virtual {
+        _burn(_msgSender(), amount);
+        _totalBurned += amount;
+    }
+
+    function burnFrom(address account, uint256 amount) public virtual {
+        _spendAllowance(account, _msgSender(), amount);
+        _burn(account, amount);
+        _totalBurned += amount;
+    }
+
+    function totalBurned() public view returns (uint256) {
+        return _totalBurned;
     }
 }
