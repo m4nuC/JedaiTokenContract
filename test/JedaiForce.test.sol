@@ -36,8 +36,11 @@ contract JedaiForceTest is Test {
         
         // Deploy the proxy using the contract name
         proxy = Upgrades.deployUUPSProxy(
-            "JedaiForce.sol:JedaiForce",  // Use contract name instead of implementation address
-            abi.encodeCall(JedaiForce.initialize, (owner))
+            "JedaiForce.sol:JedaiForce",
+            abi.encodeCall(
+                JedaiForce.initialize,
+                (owner, "JEDAI FORCE", "FORCE", 1_000_000)
+            )
         );
         
         // Attach the JedaiForce interface to the deployed proxy
@@ -110,6 +113,38 @@ contract JedaiForceTest is Test {
         assertTrue(currentImpl != newImpl);
     }
 
+    function testSetStakingContractAddress() public {
+        address newStakingContract = address(0x123);
+        
+        // Set staking contract address
+        vm.prank(owner);
+        jedaiForce.setStakingContractAddress(newStakingContract);
+        
+        // Verify the address was set correctly
+        assertEq(jedaiForce.stakingContractAddress(), newStakingContract);
+    }
+
+    function testSetStakingContractAddress_RevertZeroAddress() public {
+        // Attempt to set zero address should revert
+        vm.prank(owner);
+        vm.expectRevert("Invalid staking contract address");
+        jedaiForce.setStakingContractAddress(address(0));
+    }
+
+    function testSetStakingContractAddress_RevertNonOwner() public {
+        address newStakingContract = address(0x123);
+        
+        // Attempt to set address from non-owner should revert
+        vm.prank(address(2));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OwnableUpgradeable.OwnableUnauthorizedAccount.selector,
+                address(2)
+            )
+        );
+        jedaiForce.setStakingContractAddress(newStakingContract);
+    }
+
     function testMaxSupply() public {
         uint256 initialSupply = jedaiForce.totalSupply();
         uint256 maxSupply = jedaiForce.cap();
@@ -153,7 +188,7 @@ contract JedaiForceTest is Test {
         jedaiForce.mint(address(2), maxSupply);
     }
 
-    function testSupplyWithDecimals() public {
+    function testSupplyWithDecimals() public view {
         // Check decimals
         assertEq(jedaiForce.decimals(), 18);
         
@@ -393,5 +428,113 @@ contract JedaiForceTest is Test {
         // Verify cumulative burned amount and cap reduction
         assertEq(jedaiForce.totalBurned(), 700);
         assertEq(jedaiForce.cap(), initialCap - 700);
+    }
+
+    function testClaimForSuccess() public {
+        // Set up staking contract
+        address stakingContract = address(0x123);
+        vm.prank(owner);
+        jedaiForce.setStakingContractAddress(stakingContract);
+        
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2));
+
+        // Claim tokens through staking contract
+        vm.prank(stakingContract);
+        jedaiForce.claimFor(CLAIM_AMOUNT, CLAIM_AMOUNT, proof, claimer1);
+        
+        // Verify tokens went to staking contract
+        assertEq(jedaiForce.balanceOf(stakingContract), CLAIM_AMOUNT);
+        // Verify claim is tracked against claimer1
+        assertEq(jedaiForce.claimedAmount(claimer1), CLAIM_AMOUNT);
+        // Verify remaining claimable supply
+        assertEq(jedaiForce.getClaimableSupply(), CLAIM_AMOUNT * 2);
+    }
+
+    function testClaimForFailures() public {
+        // First test: Try to claim before setting staking contract
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2));
+
+        vm.prank(address(4));
+        vm.expectRevert("Staking contract not set");
+        jedaiForce.claimFor(CLAIM_AMOUNT, CLAIM_AMOUNT, proof, claimer1);
+
+        // Set up staking contract
+        address stakingContract = address(0x123);
+        vm.prank(owner);
+        jedaiForce.setStakingContractAddress(stakingContract);
+
+        // Try to claim from non-staking contract
+        vm.prank(address(4));
+        vm.expectRevert("Invalid staking contract address");
+        jedaiForce.claimFor(CLAIM_AMOUNT, CLAIM_AMOUNT, proof, claimer1);
+    }
+
+    function testClaimForPartialClaims() public {
+        address stakingContract = address(0x123);
+        vm.prank(owner);
+        jedaiForce.setStakingContractAddress(stakingContract);
+        
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer1, CLAIM_AMOUNT));
+
+        // First partial claim
+        vm.prank(stakingContract);
+        jedaiForce.claimFor(CLAIM_AMOUNT * 2, CLAIM_AMOUNT, proof, claimer2);
+        
+        assertEq(jedaiForce.balanceOf(stakingContract), CLAIM_AMOUNT);
+        assertEq(jedaiForce.claimedAmount(claimer2), CLAIM_AMOUNT);
+        
+        // Second partial claim
+        vm.prank(stakingContract);
+        jedaiForce.claimFor(CLAIM_AMOUNT * 2, CLAIM_AMOUNT, proof, claimer2);
+        
+        assertEq(jedaiForce.balanceOf(stakingContract), CLAIM_AMOUNT * 2);
+        assertEq(jedaiForce.claimedAmount(claimer2), CLAIM_AMOUNT * 2);
+    }
+
+    function testClaimForAndDirectClaimInteraction() public {
+        address stakingContract = address(0x123);
+        vm.prank(owner);
+        jedaiForce.setStakingContractAddress(stakingContract);
+        
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2));
+
+        // Claim half through staking contract
+        vm.prank(stakingContract);
+        jedaiForce.claimFor(CLAIM_AMOUNT, CLAIM_AMOUNT / 2, proof, claimer1);
+        
+        // Try to claim more than remaining through direct claim
+        vm.prank(claimer1);
+        vm.expectRevert("Claim amount exceeds allocation");
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT, proof);
+        
+        // Claim remaining amount through direct claim
+        vm.prank(claimer1);
+        jedaiForce.claim(CLAIM_AMOUNT, CLAIM_AMOUNT / 2, proof);
+        
+        // Verify final state
+        assertEq(jedaiForce.balanceOf(stakingContract), CLAIM_AMOUNT / 2);
+        assertEq(jedaiForce.balanceOf(claimer1), CLAIM_AMOUNT / 2);
+        assertEq(jedaiForce.claimedAmount(claimer1), CLAIM_AMOUNT);
+    }
+
+    function testClaimForEmitsEvent() public {
+        address stakingContract = address(0x123);
+        vm.prank(owner);
+        jedaiForce.setStakingContractAddress(stakingContract);
+        
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = keccak256(abi.encodePacked(claimer2, CLAIM_AMOUNT * 2));
+
+        // Expect the TokensClaimedAndStaked event
+        vm.expectEmit(true, true, true, true);
+        emit JedaiForce.TokensClaimedAndStaked(claimer1, CLAIM_AMOUNT);
+        
+        // Perform claim
+        vm.prank(stakingContract);
+        jedaiForce.claimFor(CLAIM_AMOUNT, CLAIM_AMOUNT, proof, claimer1);
     }
 }
