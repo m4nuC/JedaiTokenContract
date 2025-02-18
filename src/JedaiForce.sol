@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20CappedUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
-contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable {
+contract JedaiForce is Initializable, ERC20CappedUpgradeable, Ownable2StepUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable {
     uint8 public constant DECIMALS = 18;
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** DECIMALS;
     uint256 private _claimableSupply;
@@ -20,6 +20,7 @@ contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable
 
     event TokensClaimed(address indexed user, uint256 amount);
     event TokensClaimedAndStaked(address indexed user, uint256 amount);
+    event SetClaimableSupply(uint256 amount);
     
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -68,6 +69,7 @@ contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable
     function setClaimableSupply(uint256 amount) public onlyOwner {
         require(totalSupply() + amount <= cap(), "Claimable supply exceeds cap");
         _claimableSupply = amount;
+        emit SetClaimableSupply(amount);
     }
 
     /// @notice Sets the merkle root - only callable by owner
@@ -105,12 +107,13 @@ contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable
 
 
     function claimFor(uint256 amount, uint256 amountToClaim, bytes32[] calldata merkleProof, address receiver) external {
+        address _stakingContractAddress = stakingContractAddress;
         require(
-            stakingContractAddress != address(0),
+            _stakingContractAddress != address(0),
             "Staking contract not set"
         );
         require(
-            msg.sender == stakingContractAddress,
+            msg.sender == _stakingContractAddress,
             "Invalid staking contract address"
         );
         
@@ -132,7 +135,7 @@ contract JedaiForce is Initializable, ERC20CappedUpgradeable, OwnableUpgradeable
         _claimedAmount[receiver] += amountToClaim;
         _claimableSupply -= amountToClaim;
         // Mint tokens to the staking contract
-        _mint(stakingContractAddress, amountToClaim);
+        _mint(_stakingContractAddress, amountToClaim);
         emit TokensClaimedAndStaked(receiver, amountToClaim);
     }
 
